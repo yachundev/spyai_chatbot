@@ -6,6 +6,7 @@ import { submitErrorHandler } from "./SubmitErrorHandler.ts";
 import exitIconSVG from "./icons/exit.svg";
 import maximizeIconSVG from "./icons/maximize.svg";
 import immersiveIconSVG from "./icons/immersive.svg";
+import settingsIconSVG from "./icons/settings.svg";
 import callIconSVG from "./icons/call.svg";
 import callStartingIconSVG from "./icons/call-starting.svg";
 import hangupIconSVG from "./icons/hangup.svg";
@@ -171,58 +172,119 @@ class ButtonModule {
     }
   }
 
-  createExitButton(container, position = 0) {
-    const label = getMessage("exitImmersiveModeLong");
-    const button = this.createButton("", () => {
-      ImmersionService.exitImmersiveMode();
-    });
+  /**
+   * Creates a control button for the main (i.e. horizontal) control panel with an icon and tooltip
+   * @param {Object} options Button configuration options
+   * @param {string} options.id Button ID
+   * @param {string} options.label Tooltip/aria label
+   * @param {string} options.icon SVG icon content
+   * @param {Function} options.onClick Click handler
+   * @param {string} [options.className=''] Additional CSS classes
+   * @returns {HTMLButtonElement} The created button
+   */
+  createIconButton(options) {
+    const { id, label, icon, onClick, className = '' } = options;
+    const button = document.createElement("button");
+    button.id = id;
     button.type = "button";
-    button.className =
-      "saypi-exit-button saypi-control-button rounded-full bg-cream-550 enabled:hover:bg-cream-650 tooltip";
+    button.className = `saypi-control-button rounded-full bg-cream-550 enabled:hover:bg-cream-650 tooltip mini ${className}`;
     button.setAttribute("aria-label", label);
 
-    const svgElement = createSVGElement(exitIconSVG);
+    const svgElement = createSVGElement(icon);
     button.appendChild(svgElement);
+
+    if (onClick) {
+      button.onclick = onClick;
+    }
+
+    return button;
+  }
+
+  createExitButton(container, position = 0) {
+    const button = this.createIconButton({
+      id: 'saypi-exit-button',
+      label: getMessage("exitImmersiveModeLong"),
+      icon: exitIconSVG,
+      onClick: () => ImmersionService.exitImmersiveMode(),
+      className: 'saypi-exit-button'
+    });
 
     addChild(container, button, position);
     return button;
   }
 
   createEnterButton(container, position = 0) {
-    const label = getMessage("enterImmersiveModeLong");
-    const button = this.createButton("", () => {
-      this.immersionService.enterImmersiveMode();
+    const button = this.createIconButton({
+      id: 'saypi-enter-button', 
+      label: getMessage("enterImmersiveModeLong"),
+      icon: maximizeIconSVG,
+      onClick: () => this.immersionService.enterImmersiveMode(),
+      className: 'saypi-enter-button'
     });
-    button.type = "button";
-    button.className =
-      "saypi-enter-button saypi-control-button rounded-full bg-cream-550 enabled:hover:bg-cream-650 tooltip";
-    button.setAttribute("aria-label", label);
-
-    const svgElement = createSVGElement(maximizeIconSVG);
-    button.appendChild(svgElement);
 
     addChild(container, button, position);
     return button;
   }
 
-  createImmersiveModeButton(container, position = 0) {
-    const label = getMessage("enterImmersiveModeShort");
-    const title = getMessage("enterImmersiveModeLong");
+  /**
+   * Create a control button for Pi's side panel with a short label, long label, icon, and click handler
+   * @param {*} options 
+   * @returns 
+   */
+  createControlButton(options) {
+    const { shortLabel, longLabel = shortLabel, icon, onClick, className = '' } = options;
     const button = createElement("a", {
-      className:
-        "immersive-mode-button saypi-control-button tooltip flex h-16 w-16 flex-col items-center justify-center rounded-xl text-neutral-900 hover:bg-neutral-50-hover hover:text-neutral-900-hover active:bg-neutral-50-tap active:text-neutral-900-tap gap-0.5",
-      ariaLabel: title,
-      onclick: () => this.immersionService.enterImmersiveMode(),
+      className: `${className} maxi saypi-control-button tooltip flex h-16 w-16 flex-col items-center justify-center rounded-xl text-neutral-900 hover:bg-neutral-50-hover hover:text-neutral-900-hover active:bg-neutral-50-tap active:text-neutral-900-tap gap-0.5`,
+      ariaLabel: longLabel,
+      onclick: onClick,
     });
 
-    const svgElement = createSVGElement(immersiveIconSVG);
+    const svgElement = createSVGElement(icon);
     button.appendChild(svgElement);
 
     const labelDiv = createElement("div", {
       className: "t-label",
-      textContent: label,
-    });
+      textContent: shortLabel,
+    }, );
     button.appendChild(labelDiv);
+
+    return button;
+  }
+
+  createImmersiveModeButton(container, position = 0) {
+    const button = this.createControlButton({
+      shortLabel: getMessage("enterImmersiveModeShort"),
+      longLabel: getMessage("enterImmersiveModeLong"),
+      icon: immersiveIconSVG,
+      onClick: () => this.immersionService.enterImmersiveMode(),
+      className: 'immersive-mode-button'
+    });
+
+    addChild(container, button, position);
+    return button;
+  }
+
+  createSettingsButton(container, position = 0) {
+    const label = getMessage("extensionSettings");
+    const button = this.createControlButton({
+      shortLabel: label,
+      icon: settingsIconSVG,
+      onClick: () => openSettings(),
+      className: 'settings-button'
+    });
+
+    addChild(container, button, position);
+    return button;
+  }
+
+  createMiniSettingsButton(container, position = 0) {
+    const button = this.createIconButton({
+      id: 'saypi-settingsButton',
+      label: getMessage("extensionSettings"),
+      icon: settingsIconSVG,
+      onClick: () => openSettings(),
+      className: 'settings-button'
+    });
 
     addChild(container, button, position);
     return button;

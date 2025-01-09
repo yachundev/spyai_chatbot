@@ -1,6 +1,6 @@
 {
   "name": "saypi-userscript",
-  "version": "1.6.6",
+  "version": "1.6.8",
   "type": "module",
   "scripts": {
     "prebuild": "node i18n-validate.cjs",
@@ -54,9 +54,10 @@
     "http-proxy-middleware": "^2.0.6",
     "js-md5": "^0.8.3",
     "lodash": "^4.17.21",
-    "onnxruntime-web": "^1.19.2",
+    "onnxruntime-web": "^1.18.0",
     "rxjs": "^7.8.1",
     "serve-handler": "^6.1.5",
+    "wasm-feature-detect": "^1.8.0",
     "xstate": "^4.38.2"
   },
   "devDependencies": {
