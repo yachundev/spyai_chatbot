@@ -22,7 +22,6 @@ import { ChatbotService } from "./chatbots/ChatbotService.ts";
 import { IconModule } from "./icons/IconModule.ts";
 import { ImmersionStateChecker } from "./ImmersionServiceLite.ts";
 import { GlowColorUpdater } from "./buttons/GlowColorUpdater.js";
-import { openSettings } from "./popup/popupopener.ts";
 
 class ButtonModule {
   /**
