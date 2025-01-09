@@ -1,5 +1,6 @@
 import { AssistantResponse, MessageControls } from "../dom/MessageElements";
 import EventBus from "../events/EventBus";
+import { UserPreferenceModule } from "../prefs/PreferenceModule";
 import {
   AddedText,
   ChangedText,
@@ -10,11 +11,23 @@ import {
 import { SpeechSynthesisVoiceRemote } from "../tts/SpeechModel";
 import { PiSpeechSourceParser } from "../tts/SpeechSourceParsers";
 import { TTSControlsModule } from "../tts/TTSControlsModule";
+import { PiVoiceMenu, VoiceSelector } from "../tts/VoiceMenu";
 import { Chatbot, UserPrompt } from "./Chatbot";
 
 class PiAIChatbot implements Chatbot {
   getName(): string {
     return "Pi";
+  }
+
+  getID(): string {
+    return "pi";
+  }
+
+  getVoiceMenu(
+    preferences: UserPreferenceModule,
+    element: HTMLElement
+  ): VoiceSelector {
+    return new PiVoiceMenu(this, preferences, element);
   }
 
   getPrompt(element: HTMLElement): UserPrompt {
@@ -120,6 +133,10 @@ class PiAIChatbot implements Chatbot {
     return `https://pi.ai/public/media/voice-previews/voice-${voiceId.slice(
       -1
     )}.mp3`;
+  }
+
+  getContextWindowCapacityCharacters(): number {
+    return 500; // Pi has a 4k character limit
   }
 }
 

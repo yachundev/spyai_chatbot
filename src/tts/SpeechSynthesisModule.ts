@@ -12,6 +12,7 @@ import {
   SpeechPlaceholder,
 } from "./SpeechModel";
 import { BillingModule } from "../billing/BillingModule";
+import { Chatbot } from "../chatbots/Chatbot";
 
 function generateUUID(): string {
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
@@ -88,12 +89,12 @@ class SpeechSynthesisModule {
   private voicesCache: SpeechSynthesisVoiceRemote[] = [];
   private voicesLoading: Promise<void> | null = null;
 
-  async getVoices(): Promise<SpeechSynthesisVoiceRemote[]> {
+  async getVoices(chatbot?: Chatbot): Promise<SpeechSynthesisVoiceRemote[]> {
     if (this.voicesCache.length > 0) {
       return this.voicesCache;
     }
     if (!this.voicesLoading) {
-      this.voicesLoading = this.ttsService.getVoices().then((voices) => {
+      this.voicesLoading = this.ttsService.getVoices(chatbot).then((voices) => {
         this.voicesCache = voices;
         this.voicesLoading = null;
       });

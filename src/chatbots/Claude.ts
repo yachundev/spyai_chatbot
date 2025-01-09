@@ -1,5 +1,6 @@
 import { AssistantResponse, MessageControls } from "../dom/MessageElements";
 import { Observation } from "../dom/Observation";
+import { UserPreferenceModule } from "../prefs/PreferenceModule";
 import {
   AddedText,
   ChangedText,
@@ -7,16 +8,35 @@ import {
   InputStreamOptions,
 } from "../tts/InputStream";
 import { TTSControlsModule } from "../tts/TTSControlsModule";
+import { VoiceSelector } from "../tts/VoiceMenu";
 import { Chatbot, UserPrompt } from "./Chatbot";
+import { ClaudeVoiceMenu } from "./ClaudeVoiceMenu";
 
 class ClaudeChatbot implements Chatbot {
+  private promptCache: Map<HTMLElement, ClaudePrompt> = new Map();
+
   getName(): string {
     return "Claude";
   }
 
-  getPrompt(element: HTMLElement): UserPrompt {
-    return new ClaudePrompt(element);
+  getID(): string {
+    return "claude";
   }
+
+  getVoiceMenu(
+    preferences: UserPreferenceModule,
+    element: HTMLElement
+  ): VoiceSelector {
+    return new ClaudeVoiceMenu(this, preferences, element);
+  }
+
+  getPrompt(element: HTMLElement): UserPrompt {
+    if (!this.promptCache.has(element)) {
+      this.promptCache.set(element, new ClaudePrompt(element));
+    }
+    return this.promptCache.get(element) as ClaudePrompt;
+  }
+
   getPromptTextInputSelector(): string {
     return "div[enterkeyhint]";
   }
@@ -26,7 +46,7 @@ class ClaudeChatbot implements Chatbot {
   }
 
   getAudioControlsSelector(): string {
-    return "audio + div";
+    return "#saypi-prompt-ancestor div.min-h-4.flex-1.items-center"; // for Claude, the audio controls are in the prompt editor
   }
 
   getAudioOutputButtonSelector(): string {
@@ -56,7 +76,7 @@ class ClaudeChatbot implements Chatbot {
   }
 
   getVoiceMenuSelector(): string {
-    return "div.t-action-m";
+    return ".voice-menu"; // we define our own voice menu for Claude
   }
 
   getVoiceSettingsSelector(): string {
@@ -96,7 +116,11 @@ class ClaudeChatbot implements Chatbot {
   }
 
   getExtraCallButtonClasses(): string[] {
-    return ["rounded-full"];
+    return ["claude-call-button"];
+  }
+
+  getContextWindowCapacityCharacters(): number {
+    return 200000; // Claude has a 200k token limit
   }
 }
 
@@ -153,15 +177,22 @@ class ClaudeTextBlockCapture extends ElementTextStream {
     const messageElement = element.parentElement;
     if (messageElement && messageElement.hasAttribute("data-is-streaming")) {
       const messageObserver = new MutationObserver((mutations) => {
+        const isStreaming = messageElement.getAttribute("data-is-streaming");
+        const streamingInProgress = isStreaming === "true";
+        if (streamingInProgress) {
+          console.log("Claude is streaming...");
+        }
         mutations.forEach((mutation) => {
-          if (mutation.attributeName === "data-is-streaming") {
-            const isStreaming =
-              messageElement.getAttribute("data-is-streaming");
-            if (isStreaming === "false") {
-              const text = this.getNestedText(element);
-              this.subject.next(new AddedText(text));
-              this.subject.complete();
-            }
+          const streamingChanged =
+            mutation.attributeName === "data-is-streaming";
+          const streamingStarted = streamingChanged && isStreaming === "true";
+          const streamingStopped = streamingChanged && isStreaming === "false";
+          if (streamingStarted) {
+            console.log("Claude started streaming...");
+          } else if (streamingStopped) {
+            const text = this.getNestedText(element);
+            this.subject.next(new AddedText(text));
+            this.subject.complete();
           }
         });
       });
@@ -270,35 +301,89 @@ class ClaudeTextStream extends ElementTextStream {
   }
 }
 
+function findAndDecorateCustomPlaceholderElement(
+  prompt: HTMLElement
+): Observation {
+  const existing = prompt.parentElement?.querySelector("#claude-placeholder");
+  if (existing) {
+    return Observation.foundAlreadyDecorated("claude-placeholder", existing);
+  } else {
+    // find and copy the existing placeholder element
+    const originalPlaceholder = prompt.querySelector("p[data-placeholder]");
+    const placeholder = originalPlaceholder
+      ? (originalPlaceholder.cloneNode(true) as HTMLElement)
+      : document.createElement("p");
+    placeholder.classList.add("custom-placeholder");
+    placeholder.id = "claude-placeholder";
+    // add custom placeholder element as a sibling to the prompt element (sic)
+    prompt.insertAdjacentElement("afterend", placeholder);
+    return new Observation(placeholder, placeholder.id, true, true, true);
+  }
+}
+
 class ClaudePrompt extends UserPrompt {
   private promptElement: HTMLDivElement;
-  private placeholderManager: PlaceholderManager;
+  private placeholderManager!: PlaceholderManager; // initialized from the constructor
   readonly PROMPT_CHARACTER_LIMIT = 200000; // max prompt length is the same as context window length, 200k tokens
 
   constructor(element: HTMLElement) {
     super(element);
     this.promptElement = element as HTMLDivElement;
-    const observation = this.findAndDecorateCustomPlaceholderElement(element);
+    this.initializePlaceholderManager(this.promptElement);
+  }
+
+  /**
+   * Initialize the placeholder manager for the prompt element
+   * This method is self-healing, in that it will reinitialize the placeholder manager
+   * if the custom placeholder element is removed from the DOM for any reason.
+   */
+  initializePlaceholderManager(promptElement: HTMLElement): void {
+    const observation = findAndDecorateCustomPlaceholderElement(promptElement);
+    if (!observation.found) {
+      console.error(
+        "Failed to find or decorate the custom placeholder element for Claude's prompt."
+      );
+      return;
+    }
+
+    // Create new placeholder manager
     this.placeholderManager = new PlaceholderManager(
-      element,
+      promptElement,
       observation.target as HTMLElement,
       this.getDefaultPlaceholderText()
     );
-  }
+    console.debug("Placeholder manager initialized");
 
-  findAndDecorateCustomPlaceholderElement(prompt: HTMLElement): Observation {
-    const existing = prompt.parentElement?.querySelector(
-      "p.custom-placeholder"
-    );
-    if (existing) {
-      return Observation.foundAlreadyDecorated("claude-placeholder", existing);
+    // Add mutation observer to detect when target is removed
+    const observer = new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => {
+        if (mutation.type === "childList") {
+          const removedNodes = Array.from(mutation.removedNodes);
+          if (removedNodes.includes(observation.target as Node)) {
+            console.debug(
+              "Custom placeholder element removed, reinitializing..."
+            );
+            // Target was removed, reinitialize
+            observer.disconnect();
+            this.initializePlaceholderManager(promptElement);
+          }
+        }
+      });
+    });
+
+    // Observe the parent element for child removals (can be null if removed from DOM)
+    const promptContainer = promptElement.parentElement
+      ? promptElement.parentElement
+      : document.getElementsByClassName("saypi-prompt-container")[0];
+    if (promptContainer) {
+      observer.observe(promptContainer as Node, {
+        childList: true,
+        subtree: false,
+      });
     } else {
-      const placeholder = document.createElement("p");
-      placeholder.classList.add("custom-placeholder", "text-text-500");
-      placeholder.id = "claude-placeholder";
-      // add placeholder element as a sibling to the prompt element
-      prompt.insertAdjacentElement("afterend", placeholder);
-      return new Observation(placeholder, placeholder.id, true, true, true);
+      console.error(
+        "Prompt element parent element not found, cannot observe for placeholder removals."
+      );
     }
   }
 
@@ -345,7 +430,7 @@ class ClaudePrompt extends UserPrompt {
   clear(): void {
     this.placeholderManager.setPlaceholder("");
     const promptParagraphs = this.promptElement.querySelectorAll(
-      "p[!data-placeholder]"
+      "p:not([data-placeholder])"
     );
     promptParagraphs.forEach((p) => {
       p.remove();
@@ -355,7 +440,7 @@ class ClaudePrompt extends UserPrompt {
 
 class PlaceholderManager {
   private input: HTMLElement;
-  private placeholder: HTMLElement;
+  private customPlaceholder: HTMLElement | null;
   private placeholderText: string;
   private inputHandler: EventListener;
 
@@ -365,7 +450,7 @@ class PlaceholderManager {
     initialPlaceholder: string
   ) {
     this.input = inputElement;
-    this.placeholder = placeholderElement;
+    this.customPlaceholder = placeholderElement;
     this.placeholderText = initialPlaceholder;
     this.inputHandler = this.handleInput.bind(this);
     this.initializePlaceholder();
@@ -381,20 +466,34 @@ class PlaceholderManager {
     this.updatePlaceholderVisibility();
   }
 
+  isPromptEmpty() {
+    return this.input.textContent === "";
+  }
+
+  promptEmptied() {
+    this.showCustomPlaceholder();
+    this.hideStandardPlaceholder();
+  }
+
+  promptFilled() {
+    this.hideCustomPlaceholder();
+  }
+
   updatePlaceholderVisibility() {
-    if (this.input.textContent?.trim() === "") {
-      this.placeholder.style.display = "block";
-      this.hideStandardPlaceholder();
+    if (this.isPromptEmpty()) {
+      this.promptEmptied();
     } else {
-      this.placeholder.style.display = "none";
-      this.showStandardPlaceholder();
+      this.promptFilled();
     }
   }
 
   setPlaceholder(newPlaceholder: string) {
     this.placeholderText = newPlaceholder;
-    this.placeholder.textContent = this.placeholderText;
-    this.updatePlaceholderVisibility();
+    // only set the placeholder text if the prompt is empty
+    if (this.isPromptEmpty()) {
+      this.getOrCreateCustomPlaceholder().textContent = this.placeholderText;
+      this.updatePlaceholderVisibility();
+    }
   }
 
   getPlaceholder() {
@@ -404,19 +503,45 @@ class PlaceholderManager {
   /**
    * Get Claude's own placeholder element, which is hidden when the prompt is not empty
    */
-  private getStandardPlaceholder(): HTMLParagraphElement | null {
+  protected getStandardPlaceholder(): HTMLParagraphElement | null {
     return this.input.querySelector("p[data-placeholder]");
   }
   private showStandardPlaceholder() {
     const placeholder = this.getStandardPlaceholder();
     if (placeholder) {
-      placeholder.style.display = "block";
+      placeholder.style.visibility = "visible";
     }
   }
   private hideStandardPlaceholder() {
     const placeholder = this.getStandardPlaceholder();
     if (placeholder) {
-      placeholder.style.display = "none";
+      placeholder.style.visibility = "hidden";
+    }
+  }
+
+  private getOrCreateCustomPlaceholder(): HTMLElement {
+    if (this.customPlaceholder) {
+      return this.customPlaceholder;
+    }
+    const placeholder = findAndDecorateCustomPlaceholderElement(this.input);
+    if (placeholder.found) {
+      this.customPlaceholder = placeholder.target as HTMLElement;
+      return this.customPlaceholder;
+    }
+    throw new Error(
+      "Failed to find or create the custom placeholder element. Ensure the prompt is empty."
+    );
+  }
+
+  private showCustomPlaceholder() {
+    this.customPlaceholder = this.getOrCreateCustomPlaceholder();
+  }
+
+  private hideCustomPlaceholder() {
+    if (this.customPlaceholder) {
+      // remove the custom placeholder element from the DOM
+      this.customPlaceholder.parentNode?.removeChild(this.customPlaceholder);
+      this.customPlaceholder = null;
     }
   }
 }

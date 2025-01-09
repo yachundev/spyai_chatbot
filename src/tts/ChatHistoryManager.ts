@@ -1,5 +1,6 @@
 import { SpeechSynthesisModule, TextErrorEvent } from "./SpeechSynthesisModule";
 import { SpeechHistoryModule } from "./SpeechHistoryModule";
+import { MessageHistoryModule } from "./MessageHistoryModule";
 import { UserPreferenceModule } from "../prefs/PreferenceModule";
 import { Chatbot } from "../chatbots/Chatbot";
 import EventBus from "../events/EventBus";
@@ -14,7 +15,7 @@ import {
   getAssistantMessageByUtterance as getAssistantMessageByUtteranceId,
 } from "../dom/ChatHistory";
 import { Observation } from "../dom/Observation";
-import { VoiceMenu } from "./VoiceMenu";
+import { VoiceSelector } from "./VoiceMenu";
 import { SpeechUtterance } from "./SpeechModel";
 import { findRootAncestor } from "../dom/DOMModule";
 import { UtteranceCharge } from "../billing/BillingModule";
@@ -23,8 +24,9 @@ export class ChatHistorySpeechManager implements ResourceReleasable {
   private userPreferences = UserPreferenceModule.getInstance();
   private speechSynthesis = SpeechSynthesisModule.getInstance();
   private speechHistory = SpeechHistoryModule.getInstance();
+  private messageHistory = MessageHistoryModule.getInstance();
   private replaying = false; // flag to indicate whether the user requested a replay of an utterance
-  private voiceMenu: VoiceMenu | null = null;
+  private voiceMenu: VoiceSelector | null = null;
 
   // managed resources
   private eventListeners: EventListener[] = [];
@@ -39,22 +41,33 @@ export class ChatHistorySpeechManager implements ResourceReleasable {
     if (!audioControlsContainer) {
       return Observation.notFound("saypi-audio-controls");
     }
-    const voiceMenuElement = audioControlsContainer.querySelector(
+    let voiceMenuElement = audioControlsContainer.querySelector(
       this.chatbot.getVoiceMenuSelector()
-    );
+    ) as HTMLElement | null;
     if (voiceMenuElement && voiceMenuElement instanceof HTMLElement) {
-      let obs = Observation.foundUndecorated(
+      const obs = Observation.foundUndecorated(
         "saypi-voice-menu",
         voiceMenuElement
       );
-      this.voiceMenu = new VoiceMenu(
-        this.chatbot,
+      this.voiceMenu = this.chatbot.getVoiceMenu(
         this.userPreferences,
         voiceMenuElement
       );
       return Observation.foundAndDecorated(obs);
     }
-    return Observation.notFound("saypi-voice-menu");
+    // create a div under the container to hold the voice menu
+    voiceMenuElement = document.createElement("div");
+    voiceMenuElement.id = "saypi-voice-menu";
+    audioControlsContainer.appendChild(voiceMenuElement);
+    this.voiceMenu = this.chatbot.getVoiceMenu(
+      this.userPreferences,
+      voiceMenuElement
+    );
+    const obs = Observation.foundUndecorated(
+      "saypi-voice-menu",
+      voiceMenuElement
+    );
+    return Observation.foundAndDecorated(obs);
   }
 
   // Methods for DOM manipulation and element ID assignment
@@ -160,13 +173,13 @@ export class ChatHistorySpeechManager implements ResourceReleasable {
       selector,
       this.speechSynthesis,
       this.chatbot
-    ); // this type of observer streams speech from the speech history
-    const initialMessages = await existingMessagesObserver // TODO const oldMessages = await ...
+    );
+    const initialMessages = await existingMessagesObserver
       .runOnce(
         findRootAncestor(chatHistoryElement).querySelector(
           selector
         ) as HTMLElement
-      ); // run on initial content, i.e. most recent message in chat history
+      );
     console.debug(
       `Found ${initialMessages.length} recent assistant message(s)`
     );
@@ -177,14 +190,13 @@ export class ChatHistorySpeechManager implements ResourceReleasable {
       selector,
       this.speechSynthesis,
       this.chatbot,
-      initialMessages // ignore these messages when observing new messages
-    ); // this type of observer streams speech from the TTS service
-    // continuously observe the chat history for new messages
+      initialMessages
+    );
     newMessagesObserver.observe({
       childList: true,
       subtree: true,
       attributes: true,
-    }); // would be more efficient to observe only the direct children of the chat history, but this is more robust
+    });
     this.observers.push(newMessagesObserver);
     return newMessagesObserver;
   }
@@ -281,6 +293,33 @@ export class ChatHistorySpeechManager implements ResourceReleasable {
     });
   }
 
+  registerMessageHideListeners(): void {
+    const hideMessageListener = async () => {
+      const assistantMessages = document.querySelectorAll(".assistant-message");
+      if (assistantMessages.length > 0) {
+        const lastMessage = assistantMessages[assistantMessages.length - 1] as HTMLElement;
+        const assistantMessage = this.chatbot.getAssistantResponse(lastMessage);
+        
+        // Save the maintenance message state
+        await this.messageHistory.markAsMaintenanceMessage(assistantMessage);
+        
+        // Apply the state decoration
+        const hash = assistantMessage.hash;
+        const state = await this.messageHistory.getMessageState(hash);
+        if (state) {
+          await assistantMessage.decorateState(state);
+        }
+      }
+    };
+
+    EventBus.on("saypi:ui:hide-message", hideMessageListener);
+
+    this.eventListeners.push({
+      event: "saypi:ui:hide-message",
+      listener: hideMessageListener,
+    });
+  }
+
   // Teardown method to disconnect event listeners and release resources
   teardown(): void {
     this.eventListeners.forEach(({ event, listener }) => {
@@ -307,5 +346,6 @@ export class ChatHistorySpeechManager implements ResourceReleasable {
     this.registerSpeechStreamListeners(chatHistoryElement);
     this.registerMessageErrorListeners();
     this.registerMessageChargeListeners();
+    this.registerMessageHideListeners();
   }
 }

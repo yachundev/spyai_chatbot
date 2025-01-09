@@ -9,6 +9,7 @@ import { UserPreferenceModule } from "../prefs/PreferenceModule";
 import { audioProviders, SpeechSynthesisVoiceRemote } from "./SpeechModel";
 import { SpeechSynthesisModule } from "./SpeechSynthesisModule";
 
+
 export abstract class VoiceSelector {
   protected chatbot: Chatbot;
   protected userPreferences: UserPreferenceModule;
@@ -303,7 +304,7 @@ export abstract class VoiceSelector {
   }
 }
 
-export class VoiceMenu extends VoiceSelector {
+export class PiVoiceMenu extends VoiceSelector {
   constructor(
     chatbot: Chatbot,
     userPreferences: UserPreferenceModule,
@@ -497,4 +498,28 @@ export class VoiceSettings extends VoiceSelector {
       this.handleButtonAddition(button as HTMLButtonElement);
     });
   }
+}
+
+function innerContent(svgContent: string): string {
+  const parser = new DOMParser();
+  const svgDoc = parser.parseFromString(svgContent, "image/svg+xml");
+  return svgDoc.documentElement.innerHTML;
+}
+
+function viewbox(svgContent: string): string {
+  const parser = new DOMParser();
+  const svgDoc = parser.parseFromString(svgContent, "image/svg+xml");
+  return svgDoc.documentElement.getAttribute("viewBox") || "0 0 256 256";
+}
+
+export function addSvgToButton(
+  button: HTMLElement,
+  svgContent: string,
+  ...classNames: string[]
+): void {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  button.appendChild(svg);
+  svg.innerHTML = innerContent(svgContent);
+  svg.setAttribute("viewBox", viewbox(svgContent));
+  classNames.forEach((className) => svg.classList.add(className));
 }

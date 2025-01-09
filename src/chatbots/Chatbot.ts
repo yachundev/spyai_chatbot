@@ -2,6 +2,7 @@ import { UserPreferenceModule } from "../prefs/PreferenceModule";
 import EventBus from "../events/EventBus";
 import { ImmersionStateChecker } from "../ImmersionServiceLite";
 import { AssistantResponse } from "../dom/MessageElements";
+import { VoiceSelector } from "../tts/VoiceMenu";
 
 export interface Chatbot {
   getChatHistorySelector(): string;
@@ -22,13 +23,19 @@ export interface Chatbot {
   isChatablePath(path: string): boolean; // can the chatbot chat on this URL path?
   // ... other methods for different selectors
   getExtraCallButtonClasses(): string[];
+  getContextWindowCapacityCharacters(): number; // Returns the context window capacity in characters
 
   getPrompt(element: HTMLElement): UserPrompt;
   getAssistantResponse(
     element: HTMLElement,
     includeInitialText?: boolean
   ): AssistantResponse;
-  getName(): string;
+  getVoiceMenu(
+    preferences: UserPreferenceModule,
+    element: HTMLElement
+  ): VoiceSelector;
+  getName(): string; // the display name of the chatbot, e.g. "Pi", "Claude"
+  getID(): string; // the name of the chatbot as it appears in URLs, etc., e.g. "pi", "claude"
 }
 
 export abstract class UserPrompt {
