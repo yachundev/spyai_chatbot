@@ -36,6 +36,9 @@ type SayPiTranscribedEvent = {
   pFinishedSpeaking?: number;
   tempo?: number;
   merged?: number[];
+  responseAnalysis?: {
+    shouldRespond: boolean;
+  };
 };
 
 type SayPiSpeechStoppedEvent = {
@@ -57,6 +60,13 @@ type SayPiAudioReconnectEvent = {
 type SayPiSessionAssignedEvent = {
   type: "saypi:session:assigned";
   session_id: string;
+};
+
+type SayPiUserPreferenceChangedEvent = {
+  type: "userPreferenceChanged";
+  discretionaryMode?: boolean;
+  voiceId?: string;
+  audioProvider?: string;
 };
 
 type SayPiEvent =
@@ -86,7 +96,8 @@ type SayPiEvent =
   | SayPiAudioReconnectEvent
   | SayPiSessionAssignedEvent
   | { type: "saypi:piWriting" }
-  | { type: "saypi:piStoppedWriting" };
+  | { type: "saypi:piStoppedWriting" }
+  | SayPiUserPreferenceChangedEvent;
 
 interface SayPiContext {
   transcriptions: Record<number, string>;
@@ -96,9 +107,9 @@ interface SayPiContext {
   timeUserStoppedSpeaking: number;
   defaultPlaceholderText: string;
   sessionId?: string;
-  isMomentaryEnabled: boolean;
-  isMomentaryActive: boolean;
-}
+  shouldRespond?: boolean; // should Pi respond the next time the user finishes speaking?
+  isMaintainanceMessage?: boolean; // is the current message a maintainance message?
+
 
 // Define the state schema
 type SayPiStateSchema = {
@@ -151,6 +162,15 @@ function getHighestKey(transcriptions: Record<number, string>): number {
   );
   return highestKey;
 }
+
+function isContextWindowApproachingCapacity(transcriptions: Record<number, string>): boolean {
+  // Calculate total length of all transcriptions
+  const totalLength = Object.values(transcriptions).reduce((sum, text) => sum + text.length, 0);
+  // Consider capacity approaching if total length exceeds 90% of the context window
+  const CAPACITY_THRESHOLD = chatbot.getContextWindowCapacityCharacters() * 0.9;
+  return totalLength > CAPACITY_THRESHOLD;
+}
+
 // time at which the user's prompt is scheduled to be submitted
 // used to judge whether there's time for another remote operation (i.e. merge request)
 var nextSubmissionTime = Date.now();
@@ -176,6 +196,18 @@ let mergeService: TranscriptMergeService;
 userPreferences.getLanguage().then((language) => {
   mergeService = new TranscriptMergeService(apiServerUrl, language);
 });
+userPreferences.getDiscretionaryMode().then((discretionaryModeEnabled) => {
+  const cachedValue = userPreferences.getCachedDiscretionaryMode();
+  if (cachedValue !== discretionaryModeEnabled) {
+    console.warn("Cache is not ready yet. Wait a moment before querying preferences.");
+  }
+});
+
+function shouldAlwaysRespond(): boolean {
+  const discretionaryModeEnabled = userPreferences.getCachedDiscretionaryMode();
+  console.debug("Assigning default shouldRespond to", !discretionaryModeEnabled);
+  return !discretionaryModeEnabled;
+}
 
 let chatbot: Chatbot;
 function getPromptOrNull(): UserPrompt | null {
@@ -216,6 +248,8 @@ const machine = createMachine<SayPiContext, SayPiEvent, SayPiTypestate>(
       userIsSpeaking: false,
       timeUserStoppedSpeaking: 0,
       defaultPlaceholderText: "",
+      shouldRespond: shouldAlwaysRespond(),
+      isMaintainanceMessage: false,
     },
     id: "sayPi",
     initial: "inactive",
@@ -264,13 +298,16 @@ const machine = createMachine<SayPiContext, SayPiEvent, SayPiTypestate>(
           },
           {
             type: "callStartingPrompt",
-          },
-          assign({ isMomentaryEnabled: false }),
+          }
+
         ],
         exit: [
           {
             type: "clearPrompt",
           },
+          {
+            type: "updatePreferences",
+          }
         ],
         on: {
           "saypi:callReady": {
@@ -287,7 +324,7 @@ const machine = createMachine<SayPiContext, SayPiEvent, SayPiTypestate>(
               },
               {
                 type: "requestWakeLock",
-              },
+              }
             ],
             description: "VAD microphone is ready.\nStart it recording.",
           },
@@ -564,7 +601,12 @@ const machine = createMachine<SayPiContext, SayPiEvent, SayPiTypestate>(
                   submissionDelay: {
                     target: "submitting",
                     cond: "submissionConditionsMet",
-                    description: "Submit combined transcript to Pi.",
+                    description: "Submit combined transcript to Pi after waiting for user to stop speaking.",
+                  },
+                  "30000": {
+                    target: "submitting",
+                    cond: "submissionConditionsMet",
+                    description: "Submit combined transcript to Pi after prolonged period of user not speaking.",
                   },
                   100: {
                     target: "#sayPi.listening.recording",
@@ -668,6 +710,9 @@ const machine = createMachine<SayPiContext, SayPiEvent, SayPiTypestate>(
                   {
                     type: "notifySentMessage",
                   },
+                  {
+                    type: "setMaintainanceFlag",
+                  }
                 ],
                 exit: ["acknowledgeUserInput"],
                 always: "#sayPi.responding.piThinking",
@@ -888,12 +933,19 @@ const machine = createMachine<SayPiContext, SayPiEvent, SayPiTypestate>(
             },
           },
         },
-        entry: {
-          type: "disableCallButton",
-        },
-        exit: {
-          type: "enableCallButton",
-        },
+        entry: [
+          {
+            type: "disableCallButton",
+          }
+        ],
+        exit: [
+          {
+            type: "enableCallButton",
+          },
+          {
+            type: "clearMaintainanceFlag",
+          }
+        ],
         description:
           "Pi is responding. Text is being generated or synthesised speech is playing or waiting to play.",
         states: {
@@ -1005,6 +1057,9 @@ const machine = createMachine<SayPiContext, SayPiEvent, SayPiTypestate>(
               },
               {
                 type: "pauseRecordingIfInterruptionsNotAllowed",
+              },
+              {
+                type: "suppressResponseWhenMaintainance",
               },
             ],
             exit: [
@@ -1149,6 +1204,20 @@ const machine = createMachine<SayPiContext, SayPiEvent, SayPiTypestate>(
         },
       },
     },
+    on: {
+      "userPreferenceChanged": {
+        actions: assign({
+          shouldRespond: (context, event: SayPiUserPreferenceChangedEvent) => {
+            // Update shouldRespond based on discretionary mode if it was changed
+            console.debug("userPreferenceChanged", event);
+            if (event.discretionaryMode !== undefined) {
+              return !event.discretionaryMode; // shouldRespond is true when discretionary mode is false
+            }
+            return context.shouldRespond; // keep existing value if discretionary mode wasn't changed
+          }
+        })
+      }
+    },
     predictableActionArguments: true,
     preserveActionOrder: true,
   },
@@ -1192,12 +1261,16 @@ const machine = createMachine<SayPiContext, SayPiEvent, SayPiTypestate>(
       ) => {
         const transcription = event.text;
         const sequenceNumber = event.sequenceNumber;
-        console.log(`Partial transcript, ${sequenceNumber}: ${transcription}`);
+        const shouldRespondToThis = event.responseAnalysis?.shouldRespond;
+        console.debug(`Partial transcript [${sequenceNumber}]: ${transcription} [${shouldRespondToThis ? "respond" : "don't respond"}]`);
         SayPiContext.transcriptions[sequenceNumber] = transcription;
         if (event.merged) {
           event.merged.forEach((mergedSequenceNumber) => {
             delete SayPiContext.transcriptions[mergedSequenceNumber];
           });
+        }
+        if (shouldRespondToThis) {
+          SayPiContext.shouldRespond = true;
         }
       },
 
@@ -1458,14 +1531,22 @@ const machine = createMachine<SayPiContext, SayPiEvent, SayPiTypestate>(
       },
       clearTranscriptsAction: assign({
         transcriptions: () => ({}),
+        shouldRespond: () => shouldAlwaysRespond(), // reset response trigger for next message
       }),
-      clearTranscripts:(context: SayPiContext) => {
-        console.log("Entered clearTranscripts()");
-        if(!context.isMomentaryEnabled) {
-          console.log("clearTranscripts() momentary is not enabled, so clearing transcripts!");
-          context.transcriptions = {};
-        }
-      },
+      updatePreferences: assign({ shouldRespond: () => shouldAlwaysRespond() }),
+      setMaintainanceFlag: assign((context: SayPiContext, event) => {
+        const timeoutReached = isTimeoutReached(context);
+        const mustRespond = mustRespondToMessage(context);
+        const shouldSetFlag = mustRespond && !(shouldAlwaysRespond() || context.shouldRespond);
+        console.debug(shouldSetFlag 
+          ? `Setting maintainance flag due to ${timeoutReached ? "timeout reached" : "context window approaching capacity"}`
+          : "Clearing maintainance flag due to context window not approaching capacity and no timeout"
+        );
+        return { 
+          isMaintainanceMessage: shouldSetFlag 
+        };
+      }),
+
       pauseAudio: () => {
         EventBus.emit("audio:output:pause");
       },
@@ -1503,8 +1584,7 @@ const machine = createMachine<SayPiContext, SayPiEvent, SayPiTypestate>(
       ) => {
         const { state } = meta;
         const autoSubmitEnabled = userPreferences.getCachedAutoSubmit();
-        const isMomentaryInactive = !context.isMomentaryEnabled && !context.isMomentaryActive;
-        return autoSubmitEnabled && readyToSubmit(state, context) && isMomentaryInactive;
+
       },
       wasListening: (context: SayPiContext) => {
         return context.lastState === "listening" && !context.isMomentaryEnabled;
@@ -1611,6 +1691,20 @@ function readyToSubmit(
     state.matches("listening.converting.transcribing")
   );
   return readyToSubmitOnAllowedState(allowedState, context);
+}
+
+function isTimeoutReached(context: SayPiContext): boolean {
+  const timeSinceStoppedSpeaking = Date.now() - context.timeUserStoppedSpeaking;
+  return timeSinceStoppedSpeaking > 30000; // 30 seconds
+}
+
+function mustRespondToMessage(context: SayPiContext): boolean {
+  const timeoutReached = isTimeoutReached(context);
+  if (timeoutReached) {
+    const timeSinceStoppedSpeaking = Date.now() - context.timeUserStoppedSpeaking;
+    console.debug("Must respond due to timeout - user stopped speaking", timeSinceStoppedSpeaking/1000, "seconds ago");
+  }
+  return context.shouldRespond || isContextWindowApproachingCapacity(context.transcriptions) || timeoutReached;
 }
 
 export function createSayPiMachine(bot: Chatbot) {

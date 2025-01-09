@@ -19,10 +19,8 @@ const AUDIO_DEVICE_RECONNECT = "saypi:audio:reconnect";
 const END_CALL = "saypi:hangup";
 const SESSION_ASSIGNED = "saypi:session:assigned";
 const UI_SHOW_NOTIFICATION = "saypi:ui:show-notification";
-const MOMENTARY_LISTEN = "saypi:momentaryListen";
-const MOMENTARY_PAUSE = "saypi:momentaryPause";
-const MOMENTARY_STOP = "saypi:momentaryStop";
-const MOMENTARY_SUBMIT_TRANSCRIPTIONS = "saypi:momentarySubmitTranscriptions";
+const USER_PREFERENCE_CHANGED = "saypi:userPreferenceChanged"
+
 
 /**
  * The EventModule translates events sent on the EventBus to StateMachine events,
@@ -95,6 +93,10 @@ export default class EventModule {
       if (document.visibilityState === "visible") {
         actor.send(VISIBLE);
       }
+    });
+
+    EventBus.on(USER_PREFERENCE_CHANGED, (detail) => {
+      actor.send({ type: USER_PREFERENCE_CHANGED, ...detail });
     });
   }
 
